@@ -1,14 +1,15 @@
+
 from bs4 import BeautifulSoup
-import json
-import csv
 import os
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.support import expected_conditions as EC
 import random
 import time
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
+from config.config import email_id
+
 
 from selenium.webdriver.common.action_chains import ActionChains
 
@@ -20,17 +21,8 @@ class BBScraper():
         self.driver = webdriver.Chrome(executable_path = self.driver_path)
         self.driver.implicitly_wait(30)
         self.base_url = "https://www.bigbasket.com"
-        self.headers = {
-            'authority': 'www.bigbasket.com',
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
-            #   'cache-control': 'max-age=0',
-            #   'cookie': '_bb_locSrc=default; _bb_cid=1; _bb_hid=1723; _bb_vid="NTIzNzAxMTczOA=="; _bb_tc=0; _bb_aid="Mjk2NTE4NTMwNA=="; _bb_rdt="MzExMzQ5MDcxMA==.0"; _bb_rd=6; _sp_van_encom_hid=1722; _sp_bike_hid=1720; sessionid=9e52k1mzkt2u8fya8mwdd5l6ftmrbp60; jarvis-id=aeb31928-cd9a-4011-8708-92c9240d7bf7; _gid=GA1.2.741341646.1683125844; adb=0; bigbasket.com=66a0be9c-9d6f-4109-bbd0-697dcb9deb35; _gcl_au=1.1.428485076.1683125845; _fbp=fb.1.1683125846561.1739330889; ufi=1; _clck=1pffqau|1|fbb|0; _client_version=2663; csrftoken=Jv8fkzfcWZUOSIdERrnB3x0fL6Pr70L7qoxBlQLZBpaKtWwnQG4mU5QSe7OHlkp8; csurftoken=R2G8Sg.NTIzNzAxMTczOA==.1683203556602.5Cg4jW5YRzNMaOhWrtwrPQHpBrawuQ6lqGbtG4WYeS4=; _gat_gtag_UA_27455376_1=1; _gat_UA-27455376-1=1; _ga=GA1.1.233613085.1683125844; _ga_FRRYG5VKHX=GS1.1.1683203556.4.1.1683203558.58.0.0; _clsk=igbm70|1683203559034|2|1|p.clarity.ms/collect; ts="2023-05-04 18:02:39.427"; _bb_aid="Mjk2NTE4NTMwNA=="; _bb_cid=1; _bb_rd=6; csurftoken=OOKmVQ.NTIzNzAxMTczOA==.1683206227794.Mv9KuF/Tqhf23ZlNVJMqFjq9pDwAV6LDp3UXEYDJ/YQ=; ts="2023-05-04 18:47:09.826"; csrftoken=iMqYNtf1SkecpzbPS2QK9dJNgqhyPpl83q4KDXNp0yhgrIeT3iritGXGzexmPMY0',
-            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36'
-            }
-
-    def interceptor(self,request):
-        request.headers =  self.headers
+        self.config = os.path.join(os.getcwd(), 'config')
+        self.email = email_id
 
     def page_load(self,url_tail=""):
         """
@@ -43,24 +35,15 @@ class BBScraper():
         time.sleep(2)
 
     def hover(self, element):
+        "hover over element"
         hover = ActionChains(self.driver).move_to_element(element)
         hover.perform()
 
-    def get_category_list0(self):
-        hover_elem = self.driver.find_element(By.CSS_SELECTOR,"#navbar > ul > li.dropdown.full-wid.hvr-drop")
-        self.hover(hover_elem)
-        html_source = self.driver.page_source
-        soup = BeautifulSoup(html_source,'html.parser')
-        body = soup.find("body")
-        category_list = body.find(class_ = 'container pad-0').find("ul",{"class":"dropdown-menu"}).find("ul",{"id":"navBarMegaNav"})
-
-        x=[]
-        for item in category_list.find_all("li"):
-            x.append([item.find("a").getText(),item.find("a").get("href")])
-        print(x)
-        return x
-
     def get_category_list(self):
+        """
+        Get list of all coategories and subcategories
+        Returns: dict
+        """
         hover_elem = self.driver.find_element(By.CSS_SELECTOR,"#navbar > ul > li.dropdown.full-wid.hvr-drop")
         self.hover(hover_elem)
         click_elem = self.driver.find_element(By.CSS_SELECTOR,'#navBarMegaNav > li:nth-child(12) > a')
@@ -85,7 +68,7 @@ class BBScraper():
                 cat_dict_p1[name] = sub_cat_dict_p2
             super_category_dict_p0[super_category_list[i].text] = cat_dict_p1
         return super_category_dict_p0
-
+    
     def get_product_data_from_list(self):
         """
         Get the product data
@@ -98,8 +81,8 @@ class BBScraper():
         cat = breadcrumbs.select("div.breadcrumb-item")[2].select_one("span").text
         sub_cat = breadcrumbs.select("div")[3].select_one("span").text
         item_list = container.find(class_ = "items").find_all(class_ = "item")
-
-        #to scrape data of first 10 products from each s
+        
+        #to scrape data of first 10 products from each 
         n = 10 if len(item_list) > 10 else len(item_list)
         for i in range (0,n):
             item = item_list[i]
@@ -135,45 +118,59 @@ class BBScraper():
             else:
                 stock = "Yes"
 
-            # z = {"Super Category (P0)": super_cat,"Category (P1)": cat,"Sub Category (P2)": sub_cat ,"SKU ID": id,"Image": image,
-            # "Brand": brand,"SKU Name": name,"Link": product_link,"SKU Size":quantity,
-            # "MRP":mrp,"SP":sp,"Out of Stock?":stock}
-            # print(z)
-            self.mycsv.writerow({"Super Category (P0)": super_cat,"Category (P1)": cat,"Sub Category (P2)": sub_cat,"SKU ID": id,"Image": image,
+            data = {"Super Category (P0)": super_cat,"Category (P1)": cat,"Sub Category (P2)": sub_cat,"SKU ID": id,"Image": image,
             "Brand": brand,"SKU Name": name,"Link": product_link,"SKU Size":quantity,
-            "MRP":mrp,"SP":sp,"Out of Stock?":stock})
-
-
-
-    def create_csv_file(self):
+            "MRP":mrp,"SP":sp,"Out of Stock?":stock}
+            new_row = pd.DataFrame.from_records([data])
+            self.df = pd.concat([self.df,new_row])
+        
+    def create_df(self):
         """
-        create csv
+        create df
         """
-        rowHeaders = ["City","Super Category (P0)","Category (P1)","Sub Category (P2)","SKU ID","Image","Brand","SKU Name","SKU Size","MRP","SP","Link","Active?","Out of Stock?"]
-        self.file_csv = open("BB_output.csv", "w", newline="", encoding="utf-8")
-        self.mycsv = csv.DictWriter(self.file_csv, fieldnames=rowHeaders)
-        self.mycsv.writeheader()
+        headers = ["City","Super Category (P0)","Category (P1)","Sub Category (P2)","SKU ID","Image","Brand","SKU Name","SKU Size","MRP","SP","Link","Active?","Out of Stock?"]
+        self.df = pd.DataFrame(columns = headers)
 
     def tearDown(self):
         self.driver.quit()
-        self.file_csv.close()
+
+    def gsheet(self,df):
+        """
+        Save data to google sheets
+        """
+        scope = ['https://www.googleapis.com/auth/spreadsheets',
+         "https://www.googleapis.com/auth/drive"]
+
+        credentials = ServiceAccountCredentials.from_json_keyfile_name(os.path.join(self.config,"gs_credentials.json"), scope)
+        client = gspread.authorize(credentials)
+
+        file_name = "BigBasket_Data1"
+        sheet = client.create(file_name)
+        sheet.share(self.email, perm_type='user', role='writer')
+        sheet = client.open(file_name).sheet1
+        sheet.resize(rows=len(df), cols=len(df.columns))
+        sheet.update([df.columns.values.tolist()] + df.values.tolist())
 
 if __name__ == "__main__":
-    # try:
+    try:
         BBScraper = BBScraper()
         BBScraper.page_load()
-        BBScraper.create_csv_file()
+        BBScraper.create_df()
         bigbasket_categories = BBScraper.get_category_list()
+        #select 5 random categories
         for i in range(0,5):
             super_category_p0 = random.choice(list(bigbasket_categories.values()))
             categories_p1 = random.choice(list(super_category_p0.values()))
             for sub_category, link in categories_p1.items():
                 BBScraper.page_load(url_tail = link)
                 BBScraper.get_product_data_from_list()
-
+                
+        df = BBScraper.df
+        df.fillna("",inplace=True)
+        BBScraper.gsheet(df)
         BBScraper.tearDown()
         print('Scraping completed')
-    # except Exception as e:
-    #     print(e)
-    #     print("quitting")
-    #     BBScraper.tearDown()
+    except Exception as e:
+        print(e)
+        print("quitting")
+        BBScraper.tearDown()
